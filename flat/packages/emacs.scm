@@ -28,6 +28,7 @@
   #:use-module (gnu packages emacs)
   #:use-module (gnu packages gcc)
   #:use-module (gnu packages gnome)
+  #:use-module (gnu packages imagemagick)
   #:use-module (gnu packages webkit)
   #:use-module (gnu packages xorg)
   #:use-module (flat packages)
@@ -97,6 +98,77 @@
          (modify-inputs (package-inputs emacs)
            (prepend glibc libgccjit libxcomposite)))))))
 
+(define emacs-with-native-comp-imagemagick
+  (lambda* (emacs gcc #:optional full-aot)
+    (let ((libgccjit (libgccjit-for-gcc gcc)))
+      (package
+        (inherit emacs)
+        (source
+         (origin
+           (inherit (package-source emacs))
+           (patches
+            (append (search-patches "emacs-native-comp-exec-path.patch")
+                    (filter
+                     (lambda (f)
+                       (not (any (cut string-match <> f)
+                                 '("/emacs-exec-path\\.patch$"
+                                   "/emacs-ignore-empty-xim-styles\\.patch$"
+                                   "/emacs-pgtk-super-key-fix\\.patch$"))))
+                     (origin-patches (package-source emacs)))))))
+        (arguments
+         (substitute-keyword-arguments (package-arguments emacs)
+           ((#:make-flags flags ''())
+            (if full-aot
+                #~(cons* "NATIVE_FULL_AOT=1" #$flags)
+                flags))
+           ((#:configure-flags flags)
+            #~(cons* "--with-native-compilation" "--with-imagemagick" #$flags))
+           ((#:phases phases)
+            #~(modify-phases #$phases
+               ;; Add build-time library paths for libgccjit.
+               (add-before 'configure 'set-libgccjit-path
+                 (lambda* (#:key inputs #:allow-other-keys)
+                   (let ((libgccjit-libdir
+                          (string-append (assoc-ref inputs "libgccjit")
+                                         "/lib/gcc/" %host-type "/"
+                                         #$(package-version libgccjit) "/")))
+                     (setenv "LIBRARY_PATH"
+                             (string-append libgccjit-libdir ":"
+                                            (getenv "LIBRARY_PATH"))))
+                   #t))
+               ;; Add build-time library paths for imagemagick.
+               (add-before 'configure 'set-imagemagick-path
+                 (lambda* (#:key inputs #:allow-other-keys)
+                   (let ((imagemagick-libdir
+                          (string-append (assoc-ref inputs "imagemagick")
+                                         "/lib/")))
+                     (setenv "LIBRARY_PATH"
+                             (string-append imagemagick-libdir ":"
+                                            (getenv "LIBRARY_PATH"))))
+                   #t))
+               ;; Add runtime library paths for libgccjit.
+               (add-after 'unpack 'patch-driver-options
+                 (lambda* (#:key inputs #:allow-other-keys)
+                   (substitute* "lisp/emacs-lisp/comp.el"
+                     (("\\(defcustom native-comp-driver-options nil")
+                      (format
+                       #f "(defcustom native-comp-driver-options '(~s ~s ~s ~s)"
+                       (string-append
+                        "-B" (assoc-ref inputs "binutils") "/bin/")
+                       (string-append
+                        "-B" (assoc-ref inputs "glibc") "/lib/")
+                       (string-append
+                        "-B" (assoc-ref inputs "libgccjit") "/lib/")
+                       (string-append
+                        "-B" (assoc-ref inputs "libgccjit") "/lib/gcc/"))))
+                   #t))))))
+        (native-inputs
+         (modify-inputs (package-native-inputs emacs)
+           (prepend gcc)))
+        (inputs
+         (modify-inputs (package-inputs emacs)
+           (prepend glibc libgccjit libxcomposite imagemagick)))))))
+
 (define emacs-from-git
   (lambda* (emacs #:key pkg-name pkg-version pkg-revision git-repo git-commit checksum)
     (package
@@ -126,6 +198,17 @@
    #:git-commit "ae9bfed50dbf5043c0b47f20473ef43d8aeebebd"
    #:checksum "1595dbcaymvvjffi5q6xnzxi9027fvzkpyx2mcsrk46k19c4l8a2"))
 
+(define-public emacs-native-comp-imagemagick
+  (emacs-from-git
+   (emacs-with-native-comp-imagemagick emacs-next gcc-12 'full-aot)
+   #:pkg-name "emacs-native-comp-imagemagick"
+   #:pkg-version "28.2.50"
+   #:pkg-revision "205"
+   ;#:git-repo "https://git.savannah.gnu.org/git/emacs.git"
+   #:git-repo "https://github.com/emacs-mirror/emacs.git"
+   #:git-commit "ae9bfed50dbf5043c0b47f20473ef43d8aeebebd"
+   #:checksum "1595dbcaymvvjffi5q6xnzxi9027fvzkpyx2mcsrk46k19c4l8a2"))
+
 (define-public emacs-pgtk-native-comp
   (emacs-from-git
    (emacs-with-native-comp emacs-next-pgtk gcc-12 'full-aot)
@@ -135,3 +218,14 @@
    #:git-repo "https://github.com/flatwhatson/emacs.git"
    #:git-commit "df9dcb22ef034012ff6b88b4bf89f5461cd50c2a"
    #:checksum "1pdy7viqzaafrcgpv4fb8nlmzivasln30598hx5dsj4w2a82r2ir"))
+
+(define-public emacs-pgtk-native-comp-imagemagick
+  (emacs-from-git
+   (emacs-with-native-comp-imagemagick emacs-next-pgtk gcc-12 'full-aot)
+   #:pkg-name "emacs-pgtk-native-comp-imagemagick"
+   #:pkg-version "28.2.50"
+   #:pkg-revision "227"
+   #:git-repo "https://github.com/flatwhatson/emacs.git"
+   #:git-commit "df9dcb22ef034012ff6b88b4bf89f5461cd50c2a"
+   #:checksum "1pdy7viqzaafrcgpv4fb8nlmzivasln30598hx5dsj4w2a82r2ir"))
+
